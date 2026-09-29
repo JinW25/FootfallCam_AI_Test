@@ -19,14 +19,10 @@ CONFIRM-THEN-BRIDGE:
      short enough in both time and distance to be a plausible continuous
      human movement.
 
-Usage:
-    python main.py --video sample.mp4 --out_dir output --stride 1 --no_average_refs
 
-Tune these based on YOUR model's own calibration (see train_reid_head.py's
-check_embedding_collapse), not the defaults below, which were what worked
-for this project's own testing:
-    --confirm_threshold 0.90
-    --min_streak 3
+Usage:
+    python main.py --video sample.mp4 --out_dir output --stride 1
+
 """
 
 import argparse
@@ -71,10 +67,6 @@ def detect_and_score(video_path, ref_dir, out_dir, model, rotations, conf_thresh
         cfg, weights = "yolov4-tiny.cfg", "yolov4-tiny.weights"
     else:
         cfg, weights = "yolov4.cfg", "yolov4.weights"
-
-    # Runs YOLOv4 as a standard single-shot object detector
-    # The frame is resized to the network's expected input, passed through the CNN, and the ouput is decoded into candidate boxes with class probabilities.
-    # Only detections where class_id == person and confidence > conf_thresh survive.
     detector = PersonDetector(
         os.path.join(model_dir, cfg), os.path.join(model_dir, weights),
         os.path.join(model_dir, "coco.names"),
@@ -84,7 +76,6 @@ def detect_and_score(video_path, ref_dir, out_dir, model, rotations, conf_thresh
           f"{'1 averaged embedding' if average_refs else f'{len(gallery)} separate embeddings'} "
           f"from {ref_dir}/")
 
-    # Reading the video frame by frame sequentially, and saving to a disk as JPEG with quality 90
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -101,7 +92,6 @@ def detect_and_score(video_path, ref_dir, out_dir, model, rotations, conf_thresh
         cv2.imwrite(os.path.join(frame_cache_dir, f"{frame_idx:06d}.jpg"), frame,
                     [cv2.IMWRITE_JPEG_QUALITY, 90])
 
-        # Only every stride-th frame gets the expensive detector run on it; the rest are just cached to disk for later rendering.
         if frame_idx % stride == 0:
             raw_detections = detector.detect(
                 frame, conf_thresh=conf_thresh, rotations=rotations)
@@ -164,6 +154,64 @@ def find_confirmed_streaks(best_per_frame, stride, min_streak):
     if len(current) >= min_streak:
         streaks.append(current)
     return streaks
+
+
+# a fixed pixel allowance for ordinary bounding-box
+JUMP_NOISE_FLOOR_PX = 50
+# jitter (slightly different crop each frame, small pose shifts) -- this does NOT
+# shrink as the time gap shrinks, unlike real movement, because detection noise is
+# roughly constant regardless of how close in time two samples are. This is exactly
+# what an earlier, reverted attempt at this got wrong: a pure BRIDGE_MAX_SPEED_PX_PER_SEC
+# * gap_seconds budget goes to ~10px at stride=1 (0.04s apart), which is smaller than
+# ordinary jitter, and shattered every streak. Adding this floor fixes that.
+# on top of the floor, the same real-movement budget
+JUMP_MAX_SPEED_PX_PER_SEC = 250
+# used everywhere else in this file (bridge_gaps' gap-filling check).
+
+
+def split_far_jumps(streaks, best_per_frame, fps, min_streak):
+    """
+    A "confirmed" streak is built purely from appearance (compute_best_per_frame
+    never looks at position at all) -- so it's possible, if a different person
+    momentarily scores even higher than the real target in one specific frame,
+    for a streak to silently contain a jump to a different physical person,
+    coincidentally strung together because both happened to independently
+    clear the threshold. This checks every pair of ADJACENT frames within
+    each already-formed streak using CENTROID distance (box center, not
+    raw corners), and splits the streak wherever the jump exceeds
+    JUMP_NOISE_FLOOR_PX + JUMP_MAX_SPEED_PX_PER_SEC * elapsed_seconds --
+    a budget that stays sensible at both very short (stride=1) and longer
+    gaps, unlike a pure linear-speed formula. Each resulting piece is then
+    re-checked against min_streak; an isolated jump-to-a-stranger is
+    typically too short on its own to survive and gets discarded, while the
+    genuine trajectory on either side is preserved (and bridge_gaps can
+    often reconnect the two pieces afterward anyway).
+
+    Deliberately a POST-HOC check on already-confirmed streaks, never a
+    bias applied during confirmation itself -- see README.md for why an
+    earlier attempt that biased confirmation directly caused a regression.
+    """
+    result = []
+    for streak in streaks:
+        piece = [streak[0]]
+        for prev_f, f in zip(streak, streak[1:]):
+            prev_box = best_per_frame[prev_f]["bbox_xywh"]
+            box = best_per_frame[f]["bbox_xywh"]
+            prev_c = (prev_box[0] + prev_box[2] / 2,
+                      prev_box[1] + prev_box[3] / 2)
+            c = (box[0] + box[2] / 2, box[1] + box[3] / 2)
+            gap_seconds = (f - prev_f) / fps
+            dist = ((c[0] - prev_c[0]) ** 2 + (c[1] - prev_c[1]) ** 2) ** 0.5
+            max_dist = JUMP_NOISE_FLOOR_PX + JUMP_MAX_SPEED_PX_PER_SEC * gap_seconds
+            if dist > max_dist:
+                if len(piece) >= min_streak:
+                    result.append(piece)
+                piece = [f]
+            else:
+                piece.append(f)
+        if len(piece) >= min_streak:
+            result.append(piece)
+    return result
 
 
 def bridge_gaps(streaks, best_per_frame, detections_by_frame, fps):
@@ -295,6 +343,13 @@ def run(video_path, ref_dir, out_dir, model="full", rotations=(0, 180), stride=1
         print(
             f"  frames {s[0]}-{s[-1]} (t={s[0]/fps:.2f}s-{s[-1]/fps:.2f}s), {len(s)} samples")
 
+    streaks = split_far_jumps(streaks, best_per_frame, fps, min_streak)
+    print(f"\nAfter splitting out far centroid jumps (a different person momentarily "
+          f"scoring higher mid-streak): {len(streaks)} streaks remain:")
+    for s in streaks:
+        print(
+            f"  frames {s[0]}-{s[-1]} (t={s[0]/fps:.2f}s-{s[-1]/fps:.2f}s), {len(s)} samples")
+
     staff_by_frame = bridge_gaps(
         streaks, best_per_frame, detections_by_frame, fps)
     n_confirmed = sum(
@@ -325,7 +380,7 @@ if __name__ == "__main__":
     parser.add_argument("--ref_dir", default="reference_crops")
     parser.add_argument("--out_dir", default="output")
     parser.add_argument("--model", choices=["tiny", "full"], default="full")
-    parser.add_argument("--rotations", default="0,90,180,270",
+    parser.add_argument("--rotations", default="0,180",
                         help="comma-separated degrees, e.g. 0,90,180,270")
     parser.add_argument("--stride", type=int, default=1,
                         help="process every Nth frame (1 = every frame)")

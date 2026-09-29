@@ -35,10 +35,6 @@ labeled crops from one video), not hundreds of thousands of images:
     learning the person or starting to just memorize training crops.
 
 Requires: pip install torch torchvision pillow
-(Not run/verified in the environment this was written in -- installing
-PyTorch there hit a disk space wall pulling in full CUDA dependencies;
-see this project's README for that story. Written carefully and checked
-for syntax correctness, but you're the first real test of it executing.)
 
 Usage:
     python train_reid_head.py --data_dir training_data --epochs 50
