@@ -1,0 +1,23 @@
+# Core -- needed to run main.py, label_crops.py, single_frame.py, setup_reid_model.py
+#
+# opencv MUST be pinned below version 5 -- OpenCV 5.0 removed
+# cv2.dnn.readNetFromDarknet (and other Darknet-loading functions), which
+# detector.py depends on directly to load the YOLO model. Without this pin,
+# a fresh install could silently grab 5.x and break immediately.
+opencv-python-headless<5,>=4.8
+numpy
+onnx
+onnxruntime
+pillow
+ 
+# Only needed if you're training a fine-tuned model (train_reid_head.py)
+torch
+torchvision
+#
+# onnxscript: some newer PyTorch versions default torch.onnx.export() to a
+# "dynamo" export path that imports this even when not otherwise needed --
+# without it, the export step at the end of training fails with
+# ModuleNotFoundError: No module named 'onnxscript'. Installing it up front
+# avoids hitting that mid-training.
+onnxscript
+ 

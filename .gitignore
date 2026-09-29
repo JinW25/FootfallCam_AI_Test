@@ -1,0 +1,33 @@
+# Training data -- not needed in the repo
+training_data/
+
+# Iteration/test outputs -- keeping only output_final
+output/
+output_v0/
+output_v1/
+output_v2/
+output_v3/
+output_test/
+output_raw/
+output_individual/
+output_final_v0/
+output_final_v1/
+output_final_v2/
+frame_550_steps/
+
+# Python cache
+__pycache__/
+
+# Editor settings
+.vscode/
+
+# Large model weights -- redownload via the README's curl commands instead
+# of storing in git (remove these two lines if your check above showed they
+# fit under 100MB and you want them in the repo)
+models/yolov4.weights
+
+# Others
+Summary.docx
+Figures.pptx
+AI Evaluation Test.pdf
+sample.mp4
